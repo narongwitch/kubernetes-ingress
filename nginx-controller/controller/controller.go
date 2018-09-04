@@ -244,8 +244,14 @@ func NewLoadBalancerController(input NewLoadBalancerControllerInput) *LoadBalanc
 					lbc.syncQueue.enqueue(curSvc)
 					return
 				}
-				glog.V(3).Infof("Service %v changed, syncing", curSvc.Name)
-				lbc.enqueueIngressForService(curSvc)
+				// attempt to avoid enqueuing the ingress for this service
+				oldSvc := old.(*api_v1.Service)
+				if !reflect.DeepEqual(curSvc.Spec.Ports, oldSvc.Spec.Ports) ||
+					!reflect.DeepEqual(curSvc.Spec.Type, oldSvc.Spec.Type) {
+					glog.V(3).Infof("Service %v changed, syncing", curSvc.Name)
+					lbc.enqueueIngressForService(curSvc)
+				}
+
 			}
 		},
 	}
@@ -438,7 +444,7 @@ func (lbc *LoadBalancerController) syncEndp(task Task) {
 		ings := lbc.getIngressForEndpoints(obj)
 
 		var ingExes []*nginx.IngressEx
-		var mergableIngresses []*nginx.MergeableIngresses
+		var mergableIngressesBatch []*nginx.MergeableIngresses
 
 		for i := range ings {
 			if !lbc.isNginxIngress(&ings[i]) {
@@ -459,8 +465,7 @@ func (lbc *LoadBalancerController) syncEndp(task Task) {
 					continue
 				}
 
-				// TODO check
-				mergableIngExes = append(mergableIngExes, mergableIngresses)
+				mergableIngressesBatch = append(mergableIngressesBatch, mergeableIngresses)
 				continue
 			}
 			if !lbc.cnf.HasIngress(&ings[i]) {
@@ -484,10 +489,10 @@ func (lbc *LoadBalancerController) syncEndp(task Task) {
 		if err != nil {
 			glog.Errorf("Error updating endpoints for %v: %v", ingExes, err)
 		}
-		glog.V(3).Infof("Updating Endpoints for %v", mergableIngresses)
-		// TODO FIX err = lbc.cnf.UpdateEndpointsMergeableIngress(mergeableIngresses)
+		glog.V(3).Infof("Updating Endpoints for %v", mergableIngressesBatch)
+		err = lbc.cnf.UpdateEndpointsMergeableIngress(mergableIngressesBatch)
 		if err != nil {
-			glog.Errorf("Error updating endpoints for %v/%v: %v", ing.Namespace, ing.Name, err)
+			glog.Errorf("Error updating endpoints for %v: %v", mergableIngressesBatch, err)
 		}
 	}
 }
@@ -1008,7 +1013,6 @@ func (lbc *LoadBalancerController) enqueueIngressForService(svc *api_v1.Service)
 			continue
 		}
 		lbc.syncQueue.enqueue(&ing)
-
 	}
 }
 
